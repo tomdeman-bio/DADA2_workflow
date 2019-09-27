@@ -4,37 +4,39 @@
 #SBATCH -o dada2%j.out
 #SBATCH -e dada2%j.err
 
-module load anaconda/pricelab_5.2.0
+#species classification is possible but currently disabled
+#taxonomy assignment occurs twice in this worklow; using DADA2 methods and using RDP classifier 
 
-export scripts='/groups/pricelab/colonial_bin/Tools/dada2_pipeline_scripts'
-export qiime='/groups/pricelab/colonial_bin/Tools/qiime1/bin'
-export rdp='/groups/pricelab/colonial_bin/Tools/RDP_classifiers/rdp_classifier_2.12/dist'
-export v6species='/groups/pricelab/colonial_bin/Scripts/MiSeq16S-master/V6_species'
-export database='/groups/pricelab/colonial_bin/Tools/dada2_pipeline_databases'
+export scripts='/path/to/dada2_pipeline_scripts'
+export qiime='/path/to/qiime1/bin'
+export rdp='/path/to/rdp_classifier_2.12/dist'
+#custom species classifier can go here
+#export v6species='/path/to/V6_species'
+export database='/path/to/dada2_pipeline_databases'
 export HDF5_USE_FILE_LOCKING='FALSE'
 
 usage() {
 	echo "
 --------------------------------------------------------------------------------------------------------------------------------------
 
-	USAGE: options available
+	USAGE: available options
 		mandatory options:
-				-i or --input : provide the name of your input folder (containing FASTQ files)
+				-i or --input : provide the name of your input folder (containing raw FASTQ files)
 		optional options:
-				-r or --run : provide the name of your sequencing run e.g.:run17
+				-r or --run : provide the name of your sequencing run e.g. run17
 				-t or --threads : give the number of threads to use (default is 2)
 				-dt or --taxonomydb : give the name of your taxonomy database
-				-ds or --speciesdb : give the name of your species database
+				-ds or --speciesdb : give the name of your species taxonomy database
 	  Help options:
 				-h or --help : pop up the usage guide
 
 		e.g. :
-				sbatch dada2_pipeline_vC1_v5.sh -i raw_reads -r run17 -t 2 -dt rdp_train_set_16.fa.gz -ds rdp_species_assignment_16.fa.gz
+				sbatch dada2_pipeline_vC1_v6.sh -i raw_reads -r run17 -t 2 -dt rdp_train_set_16.fa.gz -ds rdp_species_assignment_16.fa.gz
 				raw_reads is the name of the input folder
 				run17 is the run name
 				2 is the total number of threads
 				rdp_train_set_16.fa.gz is the name of your taxonomy database
-				rdp_species_assignment_16.fa.gz is the name of your species database
+				rdp_species_assignment_16.fa.gz is the name of your species taxonomy database
 
 --------------------------------------------------------------------------------------------------------------------------------------
 
@@ -42,10 +44,10 @@ usage() {
 	}
 
 
-#Give 2 variables at least
+#Give at least two variables
 if [ $# -lt 2 ]
 then
-	echo "--------------AT LEAST give 2 arguments ( -i input_folder ) to represent input_name--------------"
+	echo "--------------give at least two arguments ( -i input_folder ) to represent input_name--------------"
 	usage
 	exit 1
 fi
@@ -103,7 +105,7 @@ done
 if [ -z "$input_folder" ]
 then
 	echo "---------------------------Can not go on without your input -------------------------------------"
-	echo "--------------AT LEAST give 2 arguments ( -i or --input ) to represent input_folder---------------"
+	echo "--------------give at least two arguments ( -i or --input ) to represent input_folder---------------"
 	usage
 	exit 1
 fi
@@ -149,7 +151,7 @@ echo "---------------------------------STEP 5: filter out reads with ambigious b
 $scripts/dada2_filter.R -f primer_trimmed_reads --maxN 0 --truncQ 0 --threads $threads --truncLen 0 --maxEE 2,2 --f_match _R1_.*fastq.gz --r_match _R2_.*fastq.gz -o $my_output/${run_name}_filtered_fastqs
 
 
-#dada2 ASV calling - creates seqtab.rds file - THIS TAKES A WHILE
+#dada2 ASV calling - creates seqtab.rds file
 echo "------------------------STEP 6: creates seqtab.rds file, hold on----------------------------------------"
 $scripts/dada2_inference.R -f $my_output/${run_name}_filtered_fastqs/ --seed 4124 -t $threads --verbose --plot_errors --minOverlap 12 -o $my_output/${run_name}_seqtab.rds
 
@@ -197,27 +199,27 @@ mv estimated_forward_err.pdf $my_output/${run_name}_estimated_forward_err.pdf
 mv estimated_reverse_err.pdf $my_output/${run_name}_estimated_reverse_err.pdf
 mv $my_output/*.rds $my_output/RDS_files
 
-#summary
-echo "--------------------------------------------STEP 12: summary ---------------------------------------"
+#taxonomy time
+echo "--------------------------------------------STEP 12: taxonomy assignment ---------------------------------------"
 #genus level classification
 java -Xmx12g -jar $rdp/classifier.jar classify -o $my_output/RDP212_GENUS_taxa_metadata.txt -q $my_output/${run_name}_species.fasta -f fixrank
 
 #species level classification using a custom classifier
-java -Xmx12g -jar $rdp/classifier.jar classify -o $my_output/RDP212_V6species_taxa_metadata.txt -q $my_output/${run_name}_species.fasta -t $v6species/rRNAClassifier.properties
+#java -Xmx12g -jar $rdp/classifier.jar classify -o $my_output/RDP212_V6species_taxa_metadata.txt -q $my_output/${run_name}_species.fasta -t $v6species/rRNAClassifier.properties
 
 
 perl $scripts/convert_default_settings_rdpclassifier_genus_taxa_to_biom_metadata.pl $my_output/RDP212_GENUS_taxa_metadata.txt
-perl $scripts/convert_default_settings_rdpclassifier_speciesV6_taxa_to_biom_metadata.pl $my_output/RDP212_V6species_taxa_metadata.txt
+#perl $scripts/convert_default_settings_rdpclassifier_speciesV6_taxa_to_biom_metadata.pl $my_output/RDP212_V6species_taxa_metadata.txt
 
 biom add-metadata -i $my_output/${run_name}_json.biom -o $my_output/${run_name}_RDP212_GENUS_c80_tax.biom --observation-metadata-fp $my_output/RDP212_GENUS_taxa_metadata.txt.c80_BIOMversion.tsv --observation-header OTUID,taxonomy --sc-separated taxonomy --output-as-json
 
-biom add-metadata -i $my_output/${run_name}_json.biom -o $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.biom --observation-metadata-fp $my_output/RDP212_V6species_taxa_metadata.txt.c80_BIOMversion.tsv --observation-header OTUID,taxonomy --sc-separated taxonomy --output-as-json
+#biom add-metadata -i $my_output/${run_name}_json.biom -o $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.biom --observation-metadata-fp $my_output/RDP212_V6species_taxa_metadata.txt.c80_BIOMversion.tsv --observation-header OTUID,taxonomy --sc-separated taxonomy --output-as-json
 
 $qiime/summarize_taxa.py -i $my_output/${run_name}_RDP212_GENUS_c80_tax.biom -L 2,3,4,5,6 -o $my_output/${run_name}_RDP212_GENUS_c80_tax_summarizeTaxa --absolute_abundance
 biom convert -i $my_output/${run_name}_RDP212_GENUS_c80_tax.biom -o $my_output/${run_name}_RDP212_GENUS_c80_tax.tsv --to-tsv --header-key taxonomy
 
-$qiime/summarize_taxa.py -i $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.biom -L 2,3,4,5,6,7 -o $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax_summarizeTaxa --absolute_abundance
-biom convert -i $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.biom -o $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.tsv --to-tsv --header-key taxonomy
+#$qiime/summarize_taxa.py -i $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.biom -L 2,3,4,5,6,7 -o $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax_summarizeTaxa --absolute_abundance
+#biom convert -i $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.biom -o $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.tsv --to-tsv --header-key taxonomy
 
 
 #aureus merging
@@ -240,7 +242,7 @@ biom convert -i $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.biom -o $my_out
 
 #copy most important files to separate folder
 cp $my_output/${run_name}_RDP212_GENUS_c80_tax_summarizeTaxa/${run_name}_RDP212_GENUS_c80_tax_L6.txt $my_output/End_user_results
-cp $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax_summarizeTaxa/${run_name}_RDP212_V6-SPECIES_c80_tax_L7.txt $my_output/End_user_results
+#cp $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax_summarizeTaxa/${run_name}_RDP212_V6-SPECIES_c80_tax_L7.txt $my_output/End_user_results
 cp $my_output/${run_name}_json_summary.txt $my_output/End_user_results
 cp $my_output/${run_name}_dada2_QC_stats.txt $my_output/End_user_results
 
