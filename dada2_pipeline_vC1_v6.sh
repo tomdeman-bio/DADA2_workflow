@@ -1,15 +1,12 @@
 #!/bin/sh
-#SBATCH --time 12:00:00
-#SBATCH -p short -n 16
-#SBATCH -o dada2%j.out
-#SBATCH -e dada2%j.err
 
 #species classification is possible but currently disabled
-#taxonomy assignment occurs twice in this worklow; using DADA2 methods and using RDP classifier 
+#taxonomy assignment occurs twice in this worklow; using DADA2 methods and using RDP classifier
 
+conda_base=$(conda info --base)
 export scripts='/path/to/dada2_pipeline_scripts'
+#need better solution for this one:
 export qiime='/path/to/qiime1/bin'
-export rdp='/path/to/rdp_classifier_2.12/dist'
 #custom species classifier can go here
 #export v6species='/path/to/V6_species'
 export database='/path/to/dada2_pipeline_databases'
@@ -21,7 +18,7 @@ usage() {
 
 	USAGE: available options
 		mandatory options:
-				-i or --input : provide the name of your input folder (containing raw FASTQ files)
+				-i or --input : provide the name of your input folder (containing gzipped raw FASTQ files)
 		optional options:
 				-r or --run : provide the name of your sequencing run e.g. run17
 				-t or --threads : give the number of threads to use (default is 2)
@@ -54,7 +51,7 @@ fi
 
 
 #default settings
-threads=16
+threads=2
 run_name=run_unknown
 db_taxonomy=rdp_train_set_16.fa.gz
 db_species=rdp_species_assignment_16.fa.gz
@@ -110,6 +107,8 @@ then
 	exit 1
 fi
 
+source $conda_base/bin/activate dada2_flow_env
+
 my_output=my_output_$run_name
 mkdir $my_output
 mkdir $my_output/End_user_results
@@ -120,7 +119,8 @@ mkdir primer_trimmed_reads
 
 #counting raw reads from unfiltered .gz files
 echo "------------------------------STEP 1: Original raw data counting---------------------------------"
-for i in $input_folder/*_R1_001.fastq.gz; do echo -n "$i" $'\t'; echo $(zcat $i | wc -l) / 4 | bc; done > $my_output/LP_${run_name}_readCount.txt
+#use zcat for Linux
+for i in $input_folder/*_R1_001.fastq.gz; do echo -n "$i" $'\t'; echo $(gzcat $i | wc -l) / 4 | bc; done > $my_output/LP_${run_name}_readCount.txt
 #text editing: delete prefix and suffix
 awk '{split($1,a,"/"); $1=a[length(a)]"\t";}1' $my_output/LP_${run_name}_readCount.txt > $my_output/LP_${run_name}_readCount.intermediate1.txt
 awk '{split($1,a,"_"); $1=a[1]"\t";}1' $my_output/LP_${run_name}_readCount.intermediate1.txt > $my_output/LP_${run_name}_readCount.intermediate2.txt
@@ -145,7 +145,6 @@ rm $input_folder/*single_trimmed*
 echo "-----------------------------STEP 4: Remove Primer Sequences--------------------------------------------"
 parallel --link --jobs $threads 'cutadapt --pair-filter any --no-indels -e 0.15 --discard-untrimmed -g file:$database/amplicon_primers.fasta -G file:$database/amplicon_primers.fasta -o primer_trimmed_reads/{1/}.gz -p primer_trimmed_reads/{2/}.gz {1} {2} > primer_trimmed_reads/{1/}_cutadapt_log.txt' ::: trimmed_reads/*_R1_*.fastq ::: trimmed_reads/*_R2_*.fastq
 
-source activate dada2
 #filter out reads with ambigious base calls (Ns)
 echo "---------------------------------STEP 5: filter out reads with ambigious base calls (Ns)----------------"
 $scripts/dada2_filter.R -f primer_trimmed_reads --maxN 0 --truncQ 0 --threads $threads --truncLen 0 --maxEE 2,2 --f_match _R1_.*fastq.gz --r_match _R2_.*fastq.gz -o $my_output/${run_name}_filtered_fastqs
@@ -165,7 +164,6 @@ $scripts/dada2_chimera_taxa.R -i $my_output/${run_name}_seqtab.rds -t 2 -r $data
 echo "---------------------------STEP 8: creating my_output files....almost done----------------------------------"
 $scripts/convert_dada2_out.R -i $my_output/${run_name}_seqtab_final.rds -b $my_output/${run_name}_biom.tsv -f $my_output/${run_name}_species.fasta --taxa_in $my_output/${run_name}_species_final.rds --taxa_out $my_output/${run_name}_taxa_metadata.txt
 #get out of the dada2 environment.... while you still can
-conda deactivate
 
 echo "----------------------------------------STEP 9: convert TSV to BIOM file---------------------------------"
 biom convert -i $my_output/${run_name}_biom.tsv -o $my_output/${run_name}_json.biom --to-json
@@ -202,24 +200,26 @@ mv $my_output/*.rds $my_output/RDS_files
 #taxonomy time
 echo "--------------------------------------------STEP 12: taxonomy assignment ---------------------------------------"
 #genus level classification
-java -Xmx12g -jar $rdp/classifier.jar classify -o $my_output/RDP212_GENUS_taxa_metadata.txt -q $my_output/${run_name}_species.fasta -f fixrank
+rdp_classifier classify -o $my_output/RDP_GENUS_taxa_metadata.txt -q $my_output/${run_name}_species.fasta -f fixrank
 
 #species level classification using a custom classifier
-#java -Xmx12g -jar $rdp/classifier.jar classify -o $my_output/RDP212_V6species_taxa_metadata.txt -q $my_output/${run_name}_species.fasta -t $v6species/rRNAClassifier.properties
+#rdp_classifier classify -o $my_output/RDP_V6species_taxa_metadata.txt -q $my_output/${run_name}_species.fasta -t $v6species/rRNAClassifier.properties
 
 
-perl $scripts/convert_default_settings_rdpclassifier_genus_taxa_to_biom_metadata.pl $my_output/RDP212_GENUS_taxa_metadata.txt
-#perl $scripts/convert_default_settings_rdpclassifier_speciesV6_taxa_to_biom_metadata.pl $my_output/RDP212_V6species_taxa_metadata.txt
+perl $scripts/convert_default_settings_rdpclassifier_genus_taxa_to_biom_metadata.pl $my_output/RDP_GENUS_taxa_metadata.txt
+#perl $scripts/convert_default_settings_rdpclassifier_speciesV6_taxa_to_biom_metadata.pl $my_output/RDP_V6species_taxa_metadata.txt
 
-biom add-metadata -i $my_output/${run_name}_json.biom -o $my_output/${run_name}_RDP212_GENUS_c80_tax.biom --observation-metadata-fp $my_output/RDP212_GENUS_taxa_metadata.txt.c80_BIOMversion.tsv --observation-header OTUID,taxonomy --sc-separated taxonomy --output-as-json
+biom add-metadata -i $my_output/${run_name}_json.biom -o $my_output/${run_name}_RDP_GENUS_c80_tax.biom --observation-metadata-fp $my_output/RDP_GENUS_taxa_metadata.txt.c80_BIOMversion.tsv --observation-header OTUID,taxonomy --sc-separated taxonomy --output-as-json
 
-#biom add-metadata -i $my_output/${run_name}_json.biom -o $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.biom --observation-metadata-fp $my_output/RDP212_V6species_taxa_metadata.txt.c80_BIOMversion.tsv --observation-header OTUID,taxonomy --sc-separated taxonomy --output-as-json
+#biom add-metadata -i $my_output/${run_name}_json.biom -o $my_output/${run_name}_RDP_V6-SPECIES_c80_tax.biom --observation-metadata-fp $my_output/RDP_V6species_taxa_metadata.txt.c80_BIOMversion.tsv --observation-header OTUID,taxonomy --sc-separated taxonomy --output-as-json
 
-$qiime/summarize_taxa.py -i $my_output/${run_name}_RDP212_GENUS_c80_tax.biom -L 2,3,4,5,6 -o $my_output/${run_name}_RDP212_GENUS_c80_tax_summarizeTaxa --absolute_abundance
-biom convert -i $my_output/${run_name}_RDP212_GENUS_c80_tax.biom -o $my_output/${run_name}_RDP212_GENUS_c80_tax.tsv --to-tsv --header-key taxonomy
+conda deactivate
 
-#$qiime/summarize_taxa.py -i $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.biom -L 2,3,4,5,6,7 -o $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax_summarizeTaxa --absolute_abundance
-#biom convert -i $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.biom -o $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax.tsv --to-tsv --header-key taxonomy
+$qiime/summarize_taxa.py -i $my_output/${run_name}_RDP_GENUS_c80_tax.biom -L 2,3,4,5,6 -o $my_output/${run_name}_RDP_GENUS_c80_tax_summarizeTaxa --absolute_abundance
+biom convert -i $my_output/${run_name}_RDP_GENUS_c80_tax.biom -o $my_output/${run_name}_RDP_GENUS_c80_tax.tsv --to-tsv --header-key taxonomy
+
+#$qiime/summarize_taxa.py -i $my_output/${run_name}_RDP_V6-SPECIES_c80_tax.biom -L 2,3,4,5,6,7 -o $my_output/${run_name}_RDP_V6-SPECIES_c80_tax_summarizeTaxa --absolute_abundance
+#biom convert -i $my_output/${run_name}_RDP_V6-SPECIES_c80_tax.biom -o $my_output/${run_name}_RDP_V6-SPECIES_c80_tax.tsv --to-tsv --header-key taxonomy
 
 
 #aureus merging
@@ -241,8 +241,8 @@ biom convert -i $my_output/${run_name}_RDP212_GENUS_c80_tax.biom -o $my_output/$
 #rm L7_intermediate4.txt
 
 #copy most important files to separate folder
-cp $my_output/${run_name}_RDP212_GENUS_c80_tax_summarizeTaxa/${run_name}_RDP212_GENUS_c80_tax_L6.txt $my_output/End_user_results
-#cp $my_output/${run_name}_RDP212_V6-SPECIES_c80_tax_summarizeTaxa/${run_name}_RDP212_V6-SPECIES_c80_tax_L7.txt $my_output/End_user_results
+cp $my_output/${run_name}_RDP_GENUS_c80_tax_summarizeTaxa/${run_name}_RDP_GENUS_c80_tax_L6.txt $my_output/End_user_results
+#cp $my_output/${run_name}_RDP_V6-SPECIES_c80_tax_summarizeTaxa/${run_name}_RDP_V6-SPECIES_c80_tax_L7.txt $my_output/End_user_results
 cp $my_output/${run_name}_json_summary.txt $my_output/End_user_results
 cp $my_output/${run_name}_dada2_QC_stats.txt $my_output/End_user_results
 
